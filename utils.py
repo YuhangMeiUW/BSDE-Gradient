@@ -441,13 +441,20 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
         # X_batch = X_batch[:, time_idx, :]  # (batch_size, t_batch_size, n)
         # Y_batch = Y_batch[:, time_idx, :]  # (batch_size, t_batch_size, n)
         # time_batch = time_batch[:, time_idx, :]  # (batch_size, t_batch_size, 1)
+        X0_batch = X_batch[:, 0, :]
+        XT_batch = X_batch[:, -1, :]
+        Y0_batch = Y_batch[:, 0, :]
+        YT_batch = Y_batch[:, -1, :]
         X_batch = X_batch.view(-1, n) # (batch_size * t_batch_size, n)
         time_batch = time_batch.view(-1, 1) # (batch_size * t_batch_size, 1)
         Y_batch = Y_batch.view(-1, n) # (batch_size * t_batch_size, n)
         phi_pred = phi_net(X_batch, time_batch)  # (batch_size * t_batch_size, n)
 
-        loss = nn.MSELoss()(phi_pred, Y_batch)  # Mean Squared Error loss
-        # loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
+        # loss = nn.MSELoss()(phi_pred, Y_batch)  # Mean Squared Error loss
+        loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
+        t0_loss = nn.SmoothL1Loss()(phi_net(X0_batch, torch.tensor(0.0).repeat(batch_size, 1)), Y0_batch)
+        t1_loss = nn.SmoothL1Loss()(phi_net(XT_batch, torch.tensor(4.0).repeat(batch_size, 1)), YT_batch)
+        loss = loss + t0_loss*0.1 +  t1_loss*0.1
         
         optimizer.zero_grad()
         loss.backward()

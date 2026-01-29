@@ -8,10 +8,11 @@ from network import ScoreNetwork, PhiNetwork
 T = 4.0  # End time
 n = 2    # Dimension of state space
 m = 1    # Dimension of Brownian motion
-N = 10000 # Number of training samples
+N = 50000 # Number of training samples
 INITIAL_DIST = 'Gaussian'  # Initial distribution type ('Gaussian', 'Bimodal', or 'Multimodal')
 m_0 = torch.tensor([0.0, 0.0])  # Mean of initial distribution
-sigma_0 = torch.eye(n) * 1  # Covariance of initial distribution
+initial_var = 5.0
+sigma_0 = torch.eye(n) * initial_var  # Covariance of initial distribution
 dt = 0.05  # Time step size
 steps = int(T/dt)  # Number of time steps
 noise_level = 0.5  # Noise level in the SDE
@@ -76,11 +77,11 @@ def partial_lf(x):
 
 # time_grid = torch.arange(0, steps+1) * dt
 
-W_f = torch.zeros((steps+1, N, m))# forward noise
+# W_f = torch.zeros((steps+1, N, m))# forward noise
 # W_b = torch.zeros((steps+1, N, m))# backward noise
-for noise_step in range(steps+1):
-    W_f[noise_step, :, :] = noise(dt, N, m)
-    # W_b[noise_step, :, :] = noise(dt, N, m)
+# for noise_step in range(steps+1):
+#     W_f[noise_step, :, :] = noise(dt, N, m)
+#     W_b[noise_step, :, :] = noise(dt, N, m)
 
 # # Generate training data by rolling out the SDE
 # X_forward = rollout(f, g, T, dt, X_0, W_f)
@@ -91,10 +92,6 @@ for noise_step in range(steps+1):
 
 # score_loss_history = train_score_network(score_nn, X_forward, time_grid, g, noise_level, score_optimizer, score_scheduler, batch_size=64, iterations=10000)
 # print("Score Network Training completed.")
-# N = 1000 # Reduce N for BSDE solving to save memory
-# X_forward = X_forward[:, :N, :]
-# W_f = W_f[:, :N, :]
-# W_b = W_b[:, :N, :]
 
 
 def H_x(x, y, z):
@@ -132,7 +129,7 @@ def H_x(x, y, z):
 # X_b = time_reversal(f, g, T, dt, X_T, W_b, [score_nn], nn_num=1)
 # Y_T = partial_lf(X_T)  # Terminal condition for Y_t
 
-# Solve the BSDE by using time reversal, keep training phi network until convergence
+# # Solve the BSDE by using time reversal, keep training phi network until convergence
 # phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
 # optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-3, weight_decay=1e-4)
 # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.9)
@@ -145,65 +142,43 @@ def H_x(x, y, z):
 #     phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
 #     optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-3, weight_decay=1e-4)
 #     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.9)
-#     loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer, scheduler, batch_size=64, iterations=4000)
+#     loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer, scheduler, batch_size=64, iterations=8000)
 #     print(f"Phi Network Training Iteration {k+1}/{kf} completed.")
 
 
-# torch.save(phi_net.state_dict(), f'data/phi_network_ip_bsde_nl{noise_level}.pth')
+# torch.save(phi_net.state_dict(), f'network/phi_network_ip_bsde_nl{noise_level}_initialsample{N}_initialvar{initial_var}.pth')
 
 
 
 
-### TODO: do this part N times and average the gradient ###
 # Solve the question by autograd on theta, you can comment this part if not needed
-# grad_thetas = []
-# # thetas = []
+N = 10000
+exp_num = 10000
+grad_thetas = []
 shift = torch.zeros((N, n))
 shift[:,0] = 0.0
 shift[:,1] = 0.0
 theta = torch.randn((N, n), requires_grad=True) + shift
-# for exp_i in range(exp_num):
+for exp_i in range(exp_num):
 
-#     # generate Brownian motion increments
-#     W_f = torch.zeros((steps+1, N, m))# forward noise
-#     for noise_step in range(steps+1):
-#         W_f[noise_step, :, :] = noise(dt, N, m)
+    # generate Brownian motion increments
+    # W_f = torch.zeros((steps+1, N, m))# forward noise
+    # for noise_step in range(steps+1):
+    #     W_f[noise_step, :, :] = noise(dt, N, m)
+    W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt))
     
-#     torch.autograd.set_detect_anomaly(True)
-#     loss = lf(rollout(f, g, T, dt, theta, W_f)[-1, :, :]).sum(dim=0)
-#     # ad_loss_history = []
-#     # bsde_loss_history = []
+    torch.autograd.set_detect_anomaly(True)
+    loss = lf(rollout(f, g, T, dt, theta, W_f)[-1, :, :]).sum(dim=0)
 
-#     grad_theta = torch.autograd.grad(loss, theta)[0]
-#     grad_thetas.append(grad_theta.detach().clone())
-    # thetas.append(theta.detach().clone())
-optimizer = torch.optim.Adam([theta], lr=1e-3)
-for step in range(1000):
-    optimizer.zero_grad()
-    loss = 0.0
-    loss = lf(rollout(f, g, T, dt, theta, W_f)[-1]).mean(dim=0)
-    loss.backward()
-    optimizer.step()
-    # print gradients in last step
-    # if step == 0:
-    #     last_grad = theta.grad.detach().clone()  # safe copy of gradient
-    #     print("Final gradient:", last_grad)
-    
-    # if step % 100 == 0 or step == 999:
-    #     print(f"Step {step}, Loss: {loss.item()/N}")
+    grad_theta = torch.autograd.grad(loss, theta)[0]
+    grad_thetas.append(grad_theta.detach().clone())
+    if (exp_i+1) % 500 == 0:
+        print(f"Experiment {exp_i+1}/{exp_num} completed.")
 
-
-    # # print gradients in last step
-    # if step == 0:
-    #     last_grad = theta.grad.detach().clone()  # safe copy of gradient
-    #     print("Final gradient:", last_grad)
-    
-    # if step % 100 == 0 or step == 999:
-    #     print(f"Step {step}, Loss: {loss.item()/N}")
-
-# torch.save(grad_thetas, f'data/initial_theta_grad_IP_nl{noise_level}_exp{exp_num}.pth')
-# torch.save(theta, f'data/initial_theta_value_IP_nl{noise_level}_exp{exp_num}.pth')
+grad_thetas = torch.stack(grad_thetas, dim=0) # (exp_num, N, n)
+torch.save(grad_thetas, f'data/initial_theta_grad_IP_nl{noise_level}_exp{exp_num}.pth')
+torch.save(theta, f'data/initial_theta_value_IP_nl{noise_level}_exp{exp_num}.pth')
 
 
 
-### We can compare the loss for this soc problem to see the convergence speed ###
+
