@@ -218,7 +218,7 @@ def rollout(f, g, tf, dt, x0, W):
     traj = [x0]  
 
     for i in range(steps):
-        drift = f(x)
+        drift = f(x, torch.tensor(i * dt))  # (N, n)
         diff = torch.einsum('nij,njk->nik', g(x), W[i].unsqueeze(-1)).squeeze(-1)
         x = x + drift * dt + diff   # out-of-place update
         traj.append(x)
@@ -264,7 +264,7 @@ def time_reversal(f, g, tf, dt, xT, W_b, score, nn_num=0, div_ggT=zero_div_ggT):
         elif nn_num == 0:
             score = score_net(X_b[i+1,:,:], time_grid[i+1,:])  # (N, n)
         gg_T = torch.einsum('nij,njk->nik', g(X_b[i+1,:,:]), g(X_b[i+1,:,:]).transpose(1,2))  # (N, n, n)
-        X_b[i,:,:] = X_b[i+1,:,:] - (f(X_b[i+1,:,:]) - torch.einsum('nij,njk->nik', gg_T, score.unsqueeze(-1)).squeeze(-1) - div_ggT(X_b[i+1,:,:])) * dt + torch.einsum('nij,njk->nik', g(X_b[i+1,:,:]), W_b[i+1,:,:].unsqueeze(-1)).squeeze(-1)
+        X_b[i,:,:] = X_b[i+1,:,:] - (f(X_b[i+1,:,:], time_grid[i+1,:]) - torch.einsum('nij,njk->nik', gg_T, score.unsqueeze(-1)).squeeze(-1) - div_ggT(X_b[i+1,:,:])) * dt + torch.einsum('nij,njk->nik', g(X_b[i+1,:,:]), W_b[i+1,:,:].unsqueeze(-1)).squeeze(-1)
     return X_b
 
 def noise(dt, N, m):
@@ -390,7 +390,7 @@ def time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, score, X_b, nn_num=0):
         phi_pred.detach_()
         # partial_H_x = H_x(x_b, Y_b[i+1,:,:], z_b)  # shape (N, n)
         # Change to exponential integrator
-        cost_term, lag_term_mat, trace_term = H_x(x_b, Y_b[i+1,:,:], z_b)  # shape (N, n), (N, n, n), (N, n)
+        cost_term, lag_term_mat, trace_term = H_x(x_b, Y_b[i+1,:,:], z_b, torch.tensor(i * dt))  # shape (N, n), (N, n, n), (N, n)
         help_mat = torch.zeros((N, n+n, n+n), dtype=x_b.dtype, device=x_b.device)
         help_mat[:, :n, :n] = lag_term_mat
         help_mat[:, :n, n:]  = torch.eye(n, dtype=x_b.dtype, device=x_b.device)
@@ -454,7 +454,7 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
         loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
         t0_loss = nn.SmoothL1Loss()(phi_net(X0_batch, torch.tensor(0.0).repeat(batch_size, 1)), Y0_batch)
         t1_loss = nn.SmoothL1Loss()(phi_net(XT_batch, torch.tensor(4.0).repeat(batch_size, 1)), YT_batch)
-        loss = loss + t0_loss*0.1 +  t1_loss*0.1
+        loss = loss + t0_loss*0.0 +  t1_loss*0.0
         
         optimizer.zero_grad()
         loss.backward()

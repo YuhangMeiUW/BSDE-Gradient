@@ -23,11 +23,12 @@ exp_num = 10000
 X_0 = generate_initial_data(INITIAL_DIST, m_0, sigma_0, N, shift=5)
 
 # Nonlinear system dynamics
-def f(x):
+def f(x, t=None):
     """
     Drift function of X_t for a nonlinear system.
     Args:
         x (torch.Tensor): State vector. Shape (N, n)
+        t (torch.Tensor, optional): Time tensor. Shape (N,) or (1,). Default is None.
     Returns:
         torch.Tensor: Drift vector. Shape (N, n)
     """
@@ -94,13 +95,14 @@ def partial_lf(x):
 # print("Score Network Training completed.")
 
 
-def H_x(x, y, z):
+def H_x(x, y, z, t=None):
     """
     Partial derivative of Hamiltonian respect to the x for Y_t in the BSDE.
     Args:
         x (torch.Tensor): State vector. Shape (N, n)
         y (torch.Tensor): Costate vector. Shape (N, n)
         z (torch.Tensor): Second order term in BSDE. Shape (N, n, m)
+        t (torch.Tensor, optional): Current time. Shape (1,). Default is None.
     Returns:
         # torch.Tensor: Drift vector. Shape (N, n)
         cost_term (torch.Tensor): Running cost term. Shape (N, n)
