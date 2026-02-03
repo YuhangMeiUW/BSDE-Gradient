@@ -483,3 +483,14 @@ def solve_riccati(A, Q_f, T, dt, dim=2):
     G_reversed = G[:,::-1]
     G_reversed = G_reversed.reshape((dim,dim,steps))
     return G_reversed
+
+
+def sample_gaussian_mixture(batch_size, centers, std=0.5):
+    """
+    centers: (K,2) tensor
+    """
+    device = centers.device
+    K = centers.shape[0]
+    idx = torch.randint(0, K, (batch_size,), device=device)
+    noise = torch.randn(batch_size, 2, device=device) * std
+    return centers[idx] + noise
