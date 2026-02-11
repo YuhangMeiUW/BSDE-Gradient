@@ -448,20 +448,32 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
         X_batch = X_batch.view(-1, n) # (batch_size * t_batch_size, n)
         time_batch = time_batch.view(-1, 1) # (batch_size * t_batch_size, 1)
         Y_batch = Y_batch.view(-1, n) # (batch_size * t_batch_size, n)
+        Y_clip = 50.0
+        Y_batch = Y_batch.clamp(-Y_clip, Y_clip)
         phi_pred = phi_net(X_batch, time_batch)  # (batch_size * t_batch_size, n)
 
         # loss = nn.MSELoss()(phi_pred, Y_batch)  # Mean Squared Error loss
-        loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
-        t0_loss = nn.SmoothL1Loss()(phi_net(X0_batch, torch.tensor(0.0).repeat(batch_size, 1)), Y0_batch)
-        t1_loss = nn.SmoothL1Loss()(phi_net(XT_batch, torch.tensor(4.0).repeat(batch_size, 1)), YT_batch)
-        loss = loss + t0_loss*0.0 +  t1_loss*0.0
+        # loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
+        loss = torch.nn.functional.smooth_l1_loss(phi_pred, Y_batch, beta=0.1)
+        # t0_loss = nn.SmoothL1Loss()(phi_net(X0_batch, torch.tensor(0.0).repeat(batch_size, 1)), Y0_batch)
+        # t1_loss = nn.SmoothL1Loss()(phi_net(XT_batch, torch.tensor(0.4).repeat(batch_size, 1)), YT_batch)
+        # loss = loss + t0_loss*0.0 +  t1_loss*0.0
         
         optimizer.zero_grad()
         loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(phi_net.parameters(), 0.5)
+        # print(grad_norm)
+
         optimizer.step()
         scheduler.step()
+
+        cos_sim = torch.nn.functional.cosine_similarity(phi_pred, Y_batch, dim=1)
+        cos_mean = cos_sim.mean()
+        angle_deg = torch.acos(torch.clamp(cos_mean, -1.0, 1.0)) * 180.0 / torch.pi
+        mag_ratio = (phi_pred.norm(dim=1) / (Y_batch.norm(dim=1) + 1e-6)).mean()
+
         if i % 500 == 0 or i == iterations - 1:
-            print(f"Iteration {i}, Loss: {loss.item()}")
+            print(f"Iteration {i}, Loss: {loss.item()}, grad_norm: {grad_norm.item()}, Y_absmax: {Y_batch.abs().max().item()}, cos_sim_mean: {cos_mean.item()}, angle_deg: {angle_deg.item()}, mag_ratio: {mag_ratio.item()}")
             loss_history.append(loss.item())
     return loss_history
 

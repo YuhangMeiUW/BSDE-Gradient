@@ -6,7 +6,7 @@ from utils import train_score_network, generate_initial_data, rollout, time_reve
 from network import ScoreNetwork, PhiNetwork
 
 # Parameters
-T = 1.0  # End time
+T = 0.4  # End time
 n = 2    # Dimension of state space
 m = 2    # Dimension of Brownian motion
 N = 10000 # Number of training samples
@@ -14,16 +14,16 @@ INITIAL_DIST = 'Gaussian'  # Initial distribution type ('Gaussian', 'Bimodal', o
 m_0 = torch.tensor([0.0, 0.0])  # Mean of initial distribution
 initial_var = 1.0
 sigma_0 = torch.eye(n) * initial_var  # Covariance of initial distribution
-dt = 0.01  # Time step size
+dt = 0.008  # Time step size
 steps = int(T/dt)  # Number of time steps
 noise_level = 2  # Noise level in the SDE
-kf = 10 # iterations for phi
+kf = 20 # iterations for phi
 exp_num = 10000
 
 # Generate initial data
 X_0 = generate_initial_data(INITIAL_DIST, m_0, sigma_0, N, shift=0.0) 
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-score_nn.load_state_dict(torch.load(f'network/2dim_moons_score_network_timesteps{steps}.pth'))
+score_nn.load_state_dict(torch.load(f'network/2dim_4gaussian_score_network_timesteps{steps}_a-2.0_s2.0_asymmetric.pth'))
 
 # Nonlinear system dynamics
 def f(x, t):
@@ -60,8 +60,9 @@ def lf(x):
     Returns:
         torch.Tensor: Terminal cost. Shape (N,)
     """
-    upper_center = torch.tensor([-2.0, 2.0]).repeat(x.shape[0], 1)
-    return 0.5 *(x - upper_center)**2
+    upper_center = torch.tensor([3.0, 3.0]).repeat(x.shape[0], 1)
+    cost = torch.einsum('bi, bi -> b', x - upper_center, x - upper_center) * 0.5
+    return cost
 
 def partial_lf(x):
     """
@@ -73,7 +74,7 @@ def partial_lf(x):
     """
     # Q_f = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
     # return x @ Q_f
-    upper_center = torch.tensor([-2.0, 2.0]).repeat(x.shape[0], 1)
+    upper_center = torch.tensor([3.0, 3.0]).repeat(x.shape[0], 1)
     return x - upper_center
 
 # time_grid = torch.arange(0, steps+1) * dt
@@ -137,16 +138,18 @@ X_b_rev = rollout(special_f, g, T, dt, X_T, W_b).detach()
 X_b = X_b_rev.flip(dims=[0])
 Y_T = partial_lf(X_T)  # Terminal condition for Y_t
 # plt.figure()
-# plt.plot(X_b_rev[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
+# # plt.plot(X_b_rev[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
+# plt.scatter(X_b_rev[0,:,0].detach().numpy(), X_b_rev[0,:,1].detach().numpy(), color='red', alpha=0.5)
 # plt.show()
 # plt.figure()
 # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
+# plt.scatter(X_b[0,:,0].detach().numpy(), X_b[0,:,1].detach().numpy(), color='red', alpha=0.5)
 # plt.show()
 
 # Solve the BSDE by using time reversal, keep training phi network until convergence
 phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-4, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.9)
+optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.9)
 
 
 for k in range(kf):
@@ -154,13 +157,13 @@ for k in range(kf):
     
     Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [score_nn], X_b, nn_num=1)
     phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-    optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.9)
+    optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.9)
     loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer, scheduler, batch_size=64, iterations=8000)
     print(f"Phi Network Training Iteration {k+1}/{kf} completed.")
 
 
-torch.save(phi_net.state_dict(), f'network/phi_network_diff_bsde_timesteps{steps}_kf{kf}_moons.pth')
+torch.save(phi_net.state_dict(), f'network/phi_network_diff_bsde_timesteps{steps}_kf{kf}_4gaussian_asymmetric_T{T}_lf33_v2.pth')
 
 
 

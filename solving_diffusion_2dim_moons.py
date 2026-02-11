@@ -14,7 +14,7 @@ INITIAL_DIST = 'Gaussian'  # Initial distribution type ('Gaussian', 'Bimodal', o
 m_0 = torch.tensor([0.0, 0.0])  # Mean of initial distribution
 initial_var = 1.0
 sigma_0 = torch.eye(n) * initial_var  # Covariance of initial distribution
-dt = 0.01  # Time step size
+dt = 0.02  # Time step size
 steps = int(T/dt)  # Number of time steps
 noise_level = 2  # Noise level in the SDE
 kf = 10 # iterations for phi
@@ -23,7 +23,7 @@ exp_num = 10000
 # Generate initial data
 X_0 = generate_initial_data(INITIAL_DIST, m_0, sigma_0, N, shift=0.0) 
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-score_nn.load_state_dict(torch.load(f'network/2dim_moons_score_network_timesteps{steps}.pth'))
+score_nn.load_state_dict(torch.load(f'network/2dim_4gaussian_score_network_timesteps{steps}.pth'))
 
 # Nonlinear system dynamics
 def f(x, t):
@@ -60,7 +60,7 @@ def lf(x):
     Returns:
         torch.Tensor: Terminal cost. Shape (N,)
     """
-    upper_center = torch.tensor([-2.0, 2.0]).repeat(x.shape[0], 1)
+    upper_center = torch.tensor([4.0, 0.0]).repeat(x.shape[0], 1)
     return 0.5 *(x - upper_center)**2
 
 def partial_lf(x):
@@ -73,7 +73,7 @@ def partial_lf(x):
     """
     # Q_f = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
     # return x @ Q_f
-    upper_center = torch.tensor([-2.0, 2.0]).repeat(x.shape[0], 1)
+    upper_center = torch.tensor([4.0, 0.0]).repeat(x.shape[0], 1)
     return x - upper_center
 
 # time_grid = torch.arange(0, steps+1) * dt
@@ -160,7 +160,7 @@ for k in range(kf):
     print(f"Phi Network Training Iteration {k+1}/{kf} completed.")
 
 
-torch.save(phi_net.state_dict(), f'network/phi_network_diff_bsde_timesteps{steps}_kf{kf}_moons.pth')
+torch.save(phi_net.state_dict(), f'network/phi_network_diff_bsde_timesteps{steps}_kf{kf}_4gaussian.pth')
 
 
 
