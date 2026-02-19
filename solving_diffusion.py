@@ -17,7 +17,7 @@ sigma_0 = torch.eye(n) * initial_var  # Covariance of initial distribution
 dt = 0.02  # Time step size
 steps = int(T/dt)  # Number of time steps
 noise_level = 2  # Noise level in the SDE
-kf = 10 # iterations for phi
+kf = 20 # iterations for phi
 exp_num = 10000
 
 # Generate initial data
@@ -143,8 +143,8 @@ Y_T = partial_lf(X_T)  # Terminal condition for Y_t
 # plt.show()
 
 # Solve the BSDE by using time reversal, keep training phi network until convergence
-phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
-optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-4, weight_decay=1e-4)
+phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
+optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.9)
 
 
@@ -152,14 +152,14 @@ for k in range(kf):
     # reinitialize phi network each iteration
     
     Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [score_nn], X_b, nn_num=1)
-    phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
-    optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-4, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.9)
+    phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
+    optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=2000, gamma=0.9)
     loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer, scheduler, batch_size=64, iterations=8000)
     print(f"Phi Network Training Iteration {k+1}/{kf} completed.")
 
 
-torch.save(phi_net.state_dict(), f'network/phi_network_diff_bsde_timesteps{steps}_kf{kf}.pth')
+torch.save(phi_net.state_dict(), f'network/phi_network_diff_bsde_timesteps{steps}_kf{kf}_v2.pth')
 
 
 
