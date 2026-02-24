@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import torch.nn as nn
 
 from utils import train_score_network, generate_initial_data, rollout, time_reversal, noise, time_reversal_bsde, train_phi_network, batched_jacobian
 from network import ScoreNetwork, PhiNetwork
@@ -13,9 +14,9 @@ N = 10000 # Number of training samples
 dt = 0.02  # Time step size
 steps = int(T/dt)  # Number of time steps
 noise_level = 2  # Noise level in the SDE
-kf = 12 # iterations for whole procedure
-opt_iter = 5000
-phi_iter = 6
+kf = 50 # iterations for whole procedure
+opt_iter = 10
+phi_iter = 1
 # u_iter = 10000
 
 # load pretrained score network
@@ -42,13 +43,13 @@ def f(x, t, u_t=None):
         x (torch.Tensor): State vector. Shape (N, n)
         t (torch.Tensor): torch.tensor of shape (1,): Current time
         score_nn (ScoreNetwork): Neural network for score function
-        u_t (torch.Tensor): Open-loop control inputs at each time step. Shape (steps, m)
+        u_t (ScoreNetwork): Neural network for feedback control law 
     Returns:
         torch.Tensor: Drift vector. Shape (N, n)
     """
     a = 2
-    u = u_t[int(t/dt)] if u_t is not None else torch.zeros(m)  # shape (m,) make sure use u at the right time step
-    gu = (g(x) @ u.unsqueeze(1)).squeeze(-1)  # shape (N, n)
+    u = u_t(x, t.repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
+    gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
     df = a * x + noise_level**2 * score_nn(x, (T - t).repeat(x.shape[0], 1)) + gu
     return df
 
@@ -114,22 +115,35 @@ def special_f(x, t=None, u_t=None):
     Drift function of X_t for a nonlinear system.
     Args:
         x (torch.Tensor): State vector. Shape (N, n)
-        u_t (torch.Tensor): Open-loop control inputs at each time step. Shape (steps, m) make sure use u at the right time step
+        u_t (ScoreNetwork): Neural network for feedback control law 
         t (torch.Tensor): Current time. Shape (1,)
     Returns:
         torch.Tensor: Drift vector. Shape (N, n)
     """
     a = 2
-    u = u_t[int((T-t)/dt)] if u_t is not None else torch.zeros(m)  # shape (m,) make sure use u at the right time step
-    gu = (g(x) @ u.unsqueeze(1)).squeeze(-1)  # shape (N, n)
+    u = u_t(x, t.repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
+    gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
     return -a * x - gu
+
+class UNetFromPhi(nn.Module):
+    def __init__(self, phi_net, g_fn):
+        super().__init__()
+        self.phi_net = phi_net      # nn.Module
+        self.g_fn = g_fn            # function: (N,n) -> (N,n,m)
+
+    def forward(self, x, t):
+        # x: (N,n), t: (N,1)
+        y = self.phi_net(x, t)          # (N,n)
+        gx = self.g_fn(x)               # (N,n,m)
+        u = torch.einsum('nim,ni->nm', gx, y)  # (N,m) = g(x)^T y
+        return u
 
 time_grid = torch.arange(0, steps+1) * dt
 
 # Initialize initial distribution parameters and open-loop control inputs
 mu = torch.zeros(n, requires_grad=True)  # Mean of initial distribution
 Q = torch.eye(n, requires_grad=True)  # Sigma = Q Q^T for initial distribution
-ut = torch.zeros(steps+1, m, requires_grad=True)  # Open-loop control inputs at each time step
+ut = None  # Initialize control input as zero
 
 
 
@@ -151,6 +165,10 @@ for k in range(kf):
     # plt.figure()
     # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
     # plt.show()
+    if k == 0:
+        uf = torch.zeros_like(X_f)  # shape (steps+1, N, m)
+    else:
+        uf = ut(X_f.reshape(-1, n), time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)).reshape(steps+1, N, m).detach()  # shape (steps+1, N, m)
 
     # Train phi network
     phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
@@ -169,7 +187,9 @@ for k in range(kf):
     # Optimize initial distribution parameters and open-loop control inputs
     mu_opt = torch.optim.AdamW([mu], lr=1e-3, weight_decay=1e-4)
     Q_opt = torch.optim.AdamW([Q], lr=1e-3, weight_decay=1e-4)
-    ut_opt = torch.optim.AdamW([ut], lr=1e-3, weight_decay=1e-4)
+    ut = UNetFromPhi(phi_net, g)
+    optimizer_phi = torch.optim.AdamW(ut.parameters(), lr=1e-5, weight_decay=1e-4)
+    scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=2000, gamma=0.9)
     for opt_i in range(opt_iter):
         
         mu_opt.zero_grad(set_to_none=True)
@@ -186,33 +206,28 @@ for k in range(kf):
         Q_kl_grad = Q.clone().detach() - torch.linalg.pinv(Q.clone().detach() + 1e-6 * torch.eye(n)).T
         mu.grad = (mu_grad + mu_kl_grad).detach()
         Q.grad = (Q_grad + Q_kl_grad).detach()
+
+        # Update ut phi through gradient descent H_u
+        W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
+        X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut)  # shape (steps+1, N, n)
+        X_flat = X_f.reshape(-1, n)  # shape (steps+1)*N, n
+        t_flat = time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)  # shape (steps+1)*N, 1
+        Y_flat = phi_net(X_flat, t_flat).detach()  # shape (steps+1)*N, n
+        Y_f = Y_flat.reshape(steps+1, N, n)  # shape (steps+1, N, n)
+        g_flat = g(X_flat).detach()  # shape (steps+1)*N, n, m
+        gX = g_flat.reshape(steps+1, N, n, m)  # shape (steps+1, N, n, m)
+        gTy = torch.einsum('tnij,tnj->tni', gX.transpose(-2, -1), Y_f).detach()  # shape (steps+1, N, m)
+        ut_loss = (uf + gTy).mean()  
+        ut_loss.backward()
+
+        optimizer_phi.step()
+        scheduler_phi.step()
         mu_opt.step()
         Q_opt.step()
-        if (opt_i+1) % 1000 == 0:
-            print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.detach().numpy()} | Q: {Q.detach().numpy()}")
+        print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.detach().numpy()} | Q: {Q.detach().numpy()}") 
     
-    theta = (torch.randn(N, n) @ Q + mu).detach()  # shape (N, n)
-    W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
-    X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut).detach()  # shape (steps+1, N, n)
-    X_flat = X_f.reshape(-1, n)  # ((T_steps*N), n)
-    t_flat = time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)  # ((T_steps*N), 1)
-    Y_flat = phi_net(X_flat, t_flat).detach() # ((T_steps*N), n)
-    Y_f = Y_flat.reshape(steps+1, N, n) # (T_steps, N, n)
-    gX_flat = g(X_flat).detach() # ((T_steps*N), n, m)
-    gX = gX_flat.reshape(steps+1, N, n, m)
-    gTy = torch.einsum('tnij,tnj->tni', gX.transpose(-2, -1), Y_f).detach() # (T_steps, N, m)
-    
-    for opt_i in range(opt_iter):
-        ut_opt.zero_grad(set_to_none=True)
-        # Compute ut gradient with the trained phi network and Hamiltonian
-        # H = l(x,u) + y^T f(x,u) + Tr(z^T g(x))
-        # H_u = u + g^T y
-        
-        ut_grad = ut.clone().detach() + gTy.mean(dim=1)  # shape (m,)
-        ut.grad = ut_grad.detach()
-        ut_opt.step()
-        if (opt_i+1) % 1000 == 0:
-            print(f"Total iteration {k+1}/{kf} | Control optimization iteration {opt_i+1}/{opt_iter}")
+    # Update ut with the trained phi network
+    ut = UNetFromPhi(phi_net, g).eval()
     
 
 torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}.pth')
