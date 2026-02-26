@@ -16,8 +16,11 @@ steps = int(T/dt)  # Number of time steps
 noise_level = 2  # Noise level in the SDE
 kf = 50 # iterations for whole procedure
 opt_iter = 10
-phi_iter = 5
+phi_iter = 10
+# temperature = 50.0
 # u_iter = 10000
+# Temperature schedule
+temperature_schedule = lambda k: 50.0 * (1 / 50)**(k/(kf-1))  # Exponential decay schedule for temperature
 
 # load pretrained score network
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
@@ -49,10 +52,10 @@ def f(x, t, u_t=None):
         torch.Tensor: Drift vector. Shape (N, n)
     """
     a = 2
-    # u = u_t(x, t.repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
-    # gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
-    u = u_t[int(t/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
-    gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
+    u = u_t(x, t.repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
+    gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
+    # u = u_t[int(t/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
+    # gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
     df = a * x + noise_level**2 * score_nn(x, (T - t).repeat(x.shape[0], 1)) + gu
     return df
 
@@ -125,28 +128,36 @@ def special_f(x, t=None, u_t=None):
         torch.Tensor: Drift vector. Shape (N, n)
     """
     a = 2
-    # u = u_t(x, (T-t).repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
-    # gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
-    u = u_t[int((T-t)/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
-    gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
+    u = u_t(x, (T-t).repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
+    gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
+    # u = u_t[int((T-t)/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
+    # gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
     return -a * x - gu
 
-def tilted_pdf(x):
-    pdf = (torch.exp(torch.tensor(-9.0)) * torch.exp(-x**2) + torch.exp(-(x-3.0)**2)) / ((1 + torch.exp(torch.tensor(-9.0))) * torch.sqrt(torch.tensor(torch.pi)))
-    return pdf
+def original_pdf(x):
+    m1 = 3.0
+    m2 = -3.0
+    sigma = 1.0
+    p1 = torch.exp(-0.5 * ((x - m1) / sigma)**2) / (sigma * torch.sqrt(torch.tensor(2.0) * torch.pi))
+    p2 = torch.exp(-0.5 * ((x - m2) / sigma)**2) / (sigma * torch.sqrt(torch.tensor(2.0) * torch.pi))
+    return 0.5 * (p1 + p2)
 
-# class UNetFromPhi(nn.Module):
-#     def __init__(self, phi_net, g_fn):
-#         super().__init__()
-#         self.phi_net = phi_net      # nn.Module
-#         self.g_fn = g_fn            # function: (N,n) -> (N,n,m)
+def tilted_pdf(x, temperature):
+    return original_pdf(x)*torch.exp(-(x-3)**2/(2*temperature))
 
-#     def forward(self, x, t):
-#         # x: (N,n), t: (N,1)
-#         y = self.phi_net(x, t)          # (N,n)
-#         gx = self.g_fn(x)               # (N,n,m)
-#         u = -torch.einsum('nim,ni->nm', gx, y)  # (N,m) = -g(x)^T y
-#         return u
+class UNetFromPhi(nn.Module):
+    def __init__(self, phi_net, g_fn, temperature):
+        super().__init__()
+        self.phi_net = phi_net      # nn.Module
+        self.g_fn = g_fn            # function: (N,n) -> (N,n,m)
+        self.temperature = temperature
+
+    def forward(self, x, t):
+        # x: (N,n), t: (N,1)
+        y = self.phi_net(x, t)          # (N,n)
+        gx = self.g_fn(x)               # (N,n,m)
+        u = -torch.einsum('nim,ni->nm', gx, y) / self.temperature  # (N,m) = -g(x)^T y / temperature
+        return u
 
 time_grid = torch.arange(0, steps+1) * dt
 
@@ -159,6 +170,8 @@ ut = None  # Initialize ut as None, which means no control at the beginning
 #### We don't need to retian score because phi PDE still holds for a wrong s(t,x). ####
 for k in range(kf):
     print(f"Iteration {k+1}/{kf}")
+    temperature = temperature_schedule(k)
+    print(f"Current temperature: {temperature}")
     # Generate initial distribution samples
     theta = (torch.randn(N, n) @ Q + mu).detach()  # shape (N, n)
     # Generate training data by rolling out the SDE
@@ -178,25 +191,25 @@ for k in range(kf):
 
     # Train phi network
     phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-    optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
-    scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=2000, gamma=0.9)
+    optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=2e-5, weight_decay=1e-4)
+    scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=500, gamma=0.9)
 
     for phi_i in range(phi_iter):
         print(f"Total iteration {k+1}/{kf} | Phi training iteration {phi_i+1}/{phi_iter}")
         Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [score_nn], X_b, nn_num=1)
-        phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-        optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
-        scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=2000, gamma=0.9)
-        phi_loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer_phi, scheduler_phi, batch_size=64, iterations=5000)
+        # phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
+        # optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
+        # scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=2000, gamma=0.9)
+        phi_loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer_phi, scheduler_phi, batch_size=64, iterations=3000)
 
     
     # Optimize initial distribution parameters and feedback control law
     mu_opt = torch.optim.AdamW([mu], lr=1e-2, weight_decay=1e-4)
     Q_opt = torch.optim.AdamW([Q], lr=1e-2, weight_decay=1e-4)
-    if ut is None:
-        ut = torch.zeros((steps+1, N, m), requires_grad=True)  # shape (steps+1, N, m)
-    ut_opt = torch.optim.AdamW([ut], lr=1e-2, weight_decay=1e-4)
-    # ut = UNetFromPhi(phi_net, g).eval()
+    # if ut is None:
+    #     ut = torch.zeros((steps+1, N, m), requires_grad=True)  # shape (steps+1, N, m)
+    # ut_opt = torch.optim.AdamW([ut], lr=1e-2, weight_decay=1e-4)
+    ut = UNetFromPhi(phi_net, g, temperature).eval()
     Xi = torch.randn(N, n)
     W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
     for opt_i in range(opt_iter):
@@ -217,19 +230,19 @@ for k in range(kf):
         Q.grad = (Q_grad + Q_kl_grad).detach()
 
         # Update ut phi through gradient descent H_u
-        X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut)  # shape (steps+1, N, n)
-        X_flat = X_f.reshape(-1, n)  # shape (steps+1)*N, n
-        t_flat = time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)  # shape (steps+1)*N, 1
-        Y_flat = phi_net(X_flat, t_flat).detach()  # shape (steps+1)*N, n
-        Y_f = Y_flat.reshape(steps+1, N, n)  # shape (steps+1, N, n)
-        g_flat = g(X_flat).detach()  # shape (steps+1)*N, n, m
-        gX = g_flat.reshape(steps+1, N, n, m)  # shape (steps+1, N, n, m)
-        gTy = torch.einsum('tnij,tnj->tni', gX.transpose(-2, -1), Y_f).detach()  # shape (steps+1, N, m)
-        ut.grad = (ut + gTy).detach()
+        # X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut)  # shape (steps+1, N, n)
+        # X_flat = X_f.reshape(-1, n)  # shape (steps+1)*N, n
+        # t_flat = time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)  # shape (steps+1)*N, 1
+        # Y_flat = phi_net(X_flat, t_flat).detach()  # shape (steps+1)*N, n
+        # Y_f = Y_flat.reshape(steps+1, N, n)  # shape (steps+1, N, n)
+        # g_flat = g(X_flat).detach()  # shape (steps+1)*N, n, m
+        # gX = g_flat.reshape(steps+1, N, n, m)  # shape (steps+1, N, n, m)
+        # gTy = torch.einsum('tnij,tnj->tni', gX.transpose(-2, -1), Y_f).detach()  # shape (steps+1, N, m)
+        # ut.grad = (ut + gTy).detach()
 
         mu_opt.step()
         Q_opt.step()
-        ut_opt.step()
+        # ut_opt.step()
         print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.detach().numpy()} | Q: {Q.detach().numpy()}") 
     
     # Update ut with the trained phi network
@@ -241,7 +254,9 @@ for k in range(kf):
         plt.figure()
         plt.hist(X_f[-1, :, 0].detach().numpy(), bins=50, color='blue', alpha=0.5, density=True)
         plotx = torch.linspace(-8, 8, 1000)
-        plt.plot(plotx.numpy(), tilted_pdf(plotx).numpy(), label='tilted pdf', color='red')
+        Z = torch.trapz(tilted_pdf(plotx, temperature), plotx)
+        q = tilted_pdf(plotx, temperature)/Z
+        plt.plot(plotx.numpy(), q.numpy(), label='tilted pdf', color='red')
         plt.title(f'Distribution of $X_T$ after Finetuning Iteration {k+1}')
         plt.xlabel('$X_T$')
         plt.show()
@@ -249,7 +264,7 @@ for k in range(kf):
         print(f"Final mean and std of X_T: {X_f[-1, :, 0].mean().item()} | {X_f[-1, :, 0].std().item()}")
     
 
-torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}.pth')
-torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}.pth')
-torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}.pth')
-torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}.pth')
+torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
+torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
+torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
+# torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
