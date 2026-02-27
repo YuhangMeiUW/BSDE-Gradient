@@ -20,7 +20,7 @@ phi_iter = 10
 # temperature = 50.0
 # u_iter = 10000
 # Temperature schedule
-temperature_schedule = lambda k: 50.0 * (1 / 50)**(k/(kf-1))  # Exponential decay schedule for temperature
+temperature_schedule = lambda k: 50.0 * (1 / 50)**(k/39) if k< 40 else 1.0  # Exponential decay schedule for temperature
 
 # load pretrained score network
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
@@ -179,7 +179,7 @@ for k in range(kf):
     W_b = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # backward noise
     X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut)  # shape (steps+1, N, n)
     X_T = X_f[-1,:,:].detach()  # shape (N, n)
-    X_b = rollout(special_f, g, T, dt, X_T, W_b, u_t=ut).detach().flip(dims=[0])
+    X_b = rollout(special_f, g, T, dt, X_T, W_b.flip(dims=[0]), u_t=ut).detach().flip(dims=[0])
     Y_T = partial_lf(X_T)  # shape (N, n)
     # plt.figure()
     # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
@@ -210,7 +210,6 @@ for k in range(kf):
     #     ut = torch.zeros((steps+1, N, m), requires_grad=True)  # shape (steps+1, N, m)
     # ut_opt = torch.optim.AdamW([ut], lr=1e-2, weight_decay=1e-4)
     ut = UNetFromPhi(phi_net, g, temperature).eval()
-    Xi = torch.randn(N, n)
     W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
     for opt_i in range(opt_iter):
         
@@ -219,6 +218,7 @@ for k in range(kf):
         
 
         # Compute mu Q gradients with the trained phi network
+        Xi = torch.randn(N, n)
         theta = (Xi @ Q + mu).detach()  # shape (N, n)
         phi_0 = phi_net(theta, torch.tensor(0.0).repeat(theta.shape[0], 1)).detach()  # shape (N, n)
         mu_grad = phi_0.mean(dim=0)  # shape (n,)
@@ -247,6 +247,7 @@ for k in range(kf):
     
     # Update ut with the trained phi network
     # ut = UNetFromPhi(phi_net, g).eval()
+    X_f = rollout(f, g, T, dt, (torch.randn(N, n) @ Q + mu).detach(), torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)), u_t=ut)  # shape (steps+1, N, n)
     if k == kf-1:
         plt.figure()
         plt.plot(X_f[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
@@ -263,8 +264,11 @@ for k in range(kf):
         print(f"Final mu: {mu.detach().numpy()} | Final Q: {Q.detach().numpy()}")
         print(f"Final mean and std of X_T: {X_f[-1, :, 0].mean().item()} | {X_f[-1, :, 0].std().item()}")
     
+    
+    torch.save(X_f, f'data/finetune_Xf_timesteps{steps}_temperature{temperature}.pth')
 
 torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
 torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
 torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
+
 # torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}_phiiter{phi_iter}.pth')
