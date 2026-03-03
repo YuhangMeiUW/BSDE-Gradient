@@ -27,6 +27,9 @@ temperature_schedule = lambda k: 50.0  # constant temperature schedule
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
 score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
+temp_score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
+temp_score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
+
 # Nonlinear system dynamics
 def g(x):
     """
@@ -202,7 +205,13 @@ for k in range(kf):
     #     X_T = X_f[-1,:,:].detach()  # shape (N, n)
     # else:
     #     X_T = X_T.clone()
-    X_b = rollout(special_f, g, T, dt, X_T, W_b.flip(dims=[0]), u_t=ut).detach().flip(dims=[0])
+    # X_b = rollout(special_f, g, T, dt, X_T, W_b.flip(dims=[0]), u_t=ut).detach().flip(dims=[0])
+    temp_score_nn.train()
+    score_optimizer = torch.optim.AdamW(temp_score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
+    score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
+    score_loss_history = train_score_network(temp_score_nn, X_f.detach(), time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=5000)
+    temp_score_nn.eval()
+    X_b = time_reversal(f, g, T, dt, X_T, W_b, [temp_score_nn], nn_num=1).detach()
     Y_T = partial_lf(X_T)  # shape (N, n)
     # plt.figure()
     # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
@@ -242,7 +251,7 @@ for k in range(kf):
     for phi_i in range(phi_iter):
         print(f"Total iteration {k+1}/{kf} | Phi training iteration {phi_i+1}/{phi_iter}")
         phi_net.eval()
-        Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [score_nn], X_b, nn_num=1)
+        Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [temp_score_nn], X_b, nn_num=1)
         phi_net.train()
         # plt.figure()
         # plt.plot(Y_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
@@ -297,15 +306,15 @@ for k in range(kf):
                 print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.clone().detach().numpy()} | Q: {Q.clone().detach().numpy()}")
         
         # Retrain score network with the updated initial distribution
-        X_f = rollout(f, g, T, dt, (torch.randn(N, n) @ Q.clone().detach() + mu.clone().detach()).detach(), torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)), u_t=ut)  # shape (steps+1, N, n)
-        X_T = X_f[-1].clone().detach()  # shape (N, n)
-        W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
-        X_train_score = rollout(special_f, g, T, dt, X_T, W_f, u_t=ut).detach() # shape (steps+1, N, n)
-        score_optimizer = torch.optim.AdamW(score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
-        score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
-        score_nn.train()
-        score_loss_history = train_score_network(score_nn, X_train_score, time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=5000)
-        score_nn.eval()
+        # X_f = rollout(f, g, T, dt, (torch.randn(N, n) @ Q.clone().detach() + mu.clone().detach()).detach(), torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)), u_t=ut)  # shape (steps+1, N, n)
+        # X_T = X_f[-1].clone().detach()  # shape (N, n)
+        # W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
+        # X_train_score = rollout(special_f, g, T, dt, X_T, W_f, u_t=ut).detach() # shape (steps+1, N, n)
+        # score_optimizer = torch.optim.AdamW(score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
+        # score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
+        # score_nn.train()
+        # score_loss_history = train_score_network(score_nn, X_train_score, time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=5000)
+        # score_nn.eval()
     # for opt_i in range(opt_iter):
         
     #     mu_opt.zero_grad(set_to_none=True)
@@ -362,8 +371,8 @@ for k in range(kf):
     
     # print(f"Final mean and std of X_T: {X_f[-1, :, 0].mean().item()} | {X_f[-1, :, 0].std().item()}")
 
-torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times.pth')
-torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times.pth')
-torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times.pth')
+torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
+torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
+torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
 
 # torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_temperature{temperature}.pth')
