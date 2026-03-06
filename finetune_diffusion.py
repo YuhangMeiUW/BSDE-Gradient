@@ -16,19 +16,19 @@ steps = int(T/dt)  # Number of time steps
 noise_level = 2  # Noise level in the SDE
 kf = 30 # iterations for whole procedure
 opt_iter = 1000
-phi_iter = 5
+phi_iter = 10
 # temperature = 50.0
 # u_iter = 10000
 # Temperature schedule
 # temperature_schedule = lambda k: 50.0 * (1 / 50)**(k/39) if k< 40 else 1.0  # Exponential decay schedule for temperature
-temperature_schedule = lambda k: 50.0  # constant temperature schedule 
+temperature_schedule = lambda k: 1.0  # constant temperature schedule 
 
 # load pretrained score network
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
 score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
-temp_score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
-temp_score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
+temp_score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=3)
+# temp_score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
 # Nonlinear system dynamics
 def g(x):
@@ -177,7 +177,9 @@ time_grid = torch.arange(0, steps+1) * dt
 # Initialize initial distribution parameters and open-loop control inputs
 mu = torch.zeros(n, requires_grad=True)  # Mean of initial distribution
 Q = torch.tensor([[2.0]], requires_grad=True)  # Sigma = Q Q^T for initial distribution
-ut = None  # Initialize ut as None, which means no control at the beginning
+phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
+phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{10}_optiter{1000}_temperature{3.0}_initialQ2_updateQmu6times_2score.pth'))
+ut = UNetFromPhi(phi_net, g, 3.0)  # Initialize ut as None, which means no control at the beginning
 mu_opt = torch.optim.AdamW([mu], lr=3e-3, weight_decay=1e-4)
 Q_opt = torch.optim.AdamW([Q], lr=3e-3, weight_decay=1e-4)
 
@@ -209,7 +211,7 @@ for k in range(kf):
     temp_score_nn.train()
     score_optimizer = torch.optim.AdamW(temp_score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
     score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
-    score_loss_history = train_score_network(temp_score_nn, X_f.detach(), time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=5000)
+    score_loss_history = train_score_network(temp_score_nn, X_f.detach(), time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=10000)
     temp_score_nn.eval()
     X_b = time_reversal(f, g, T, dt, X_T, W_b, [temp_score_nn], nn_num=1).detach()
     Y_T = partial_lf(X_T)  # shape (N, n)
@@ -245,6 +247,7 @@ for k in range(kf):
     # Train phi network
     if k == 0:
         phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
+        phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{5}_optiter{1000}_temperature{8.0}_initialQ2_updateQmu6times_2score.pth'))
     optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
     scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=500, gamma=0.9)
 
