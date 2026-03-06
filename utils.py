@@ -199,7 +199,7 @@ def generate_initial_data(dist_type, mean, cov, num_samples, shift=3, mode_num=4
 #         X[i+1,:,:] = X[i,:,:] + f(X[i,:,:])*dt + torch.einsum('nij,njk->nik', g(X[i,:,:]), W[i,:,:].unsqueeze(-1)).squeeze(-1)
 #     return X
 
-def rollout(f, g, tf, dt, x0, W):
+def rollout(f, g, tf, dt, x0, W, u_t=None):
     """
     Simulate the SDE using Euler-Maruyama method.
     Args:
@@ -209,6 +209,7 @@ def rollout(f, g, tf, dt, x0, W):
         dt: Time step size
         x0: Initial state (N, n)
         W: Brownian motion increments (steps+1, N, m)
+        u_t: Open-loop control inputs at each time step. Shape (steps, m)
     Returns:
         X: State trajectory (steps+1, N, n)
     """
@@ -218,7 +219,7 @@ def rollout(f, g, tf, dt, x0, W):
     traj = [x0]  
 
     for i in range(steps):
-        drift = f(x, torch.tensor(i * dt))  # (N, n)
+        drift = f(x, torch.tensor(i * dt), u_t)  # (N, n)
         diff = torch.einsum('nij,njk->nik', g(x), W[i].unsqueeze(-1)).squeeze(-1)
         x = x + drift * dt + diff   # out-of-place update
         traj.append(x)
@@ -448,8 +449,8 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
         X_batch = X_batch.view(-1, n) # (batch_size * t_batch_size, n)
         time_batch = time_batch.view(-1, 1) # (batch_size * t_batch_size, 1)
         Y_batch = Y_batch.view(-1, n) # (batch_size * t_batch_size, n)
-        Y_clip = 50.0
-        Y_batch = Y_batch.clamp(-Y_clip, Y_clip)
+        # Y_clip = 40.0
+        # Y_batch = Y_batch.clamp(-Y_clip, Y_clip)
         phi_pred = phi_net(X_batch, time_batch)  # (batch_size * t_batch_size, n)
 
         # loss = nn.MSELoss()(phi_pred, Y_batch)  # Mean Squared Error loss
@@ -461,7 +462,7 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
         
         optimizer.zero_grad()
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(phi_net.parameters(), 0.5)
+        # grad_norm = torch.nn.utils.clip_grad_norm_(phi_net.parameters(), 0.5)
         # print(grad_norm)
 
         optimizer.step()
@@ -473,7 +474,7 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
         mag_ratio = (phi_pred.norm(dim=1) / (Y_batch.norm(dim=1) + 1e-6)).mean()
 
         if i % 500 == 0 or i == iterations - 1:
-            print(f"Iteration {i}, Loss: {loss.item()}, grad_norm: {grad_norm.item()}, Y_absmax: {Y_batch.abs().max().item()}, cos_sim_mean: {cos_mean.item()}, angle_deg: {angle_deg.item()}, mag_ratio: {mag_ratio.item()}")
+            print(f"Iteration {i}, Loss: {loss.item()}, Y_absmax: {Y_batch.abs().max().item()}, cos_sim_mean: {cos_mean.item()}, angle_deg: {angle_deg.item()}, mag_ratio: {mag_ratio.item()}")
             loss_history.append(loss.item())
     return loss_history
 
@@ -506,3 +507,111 @@ def sample_gaussian_mixture(batch_size, centers, std=0.5):
     idx = torch.randint(0, K, (batch_size,), device=device)
     noise = torch.randn(batch_size, 2, device=device) * std
     return centers[idx] + noise
+
+
+def non_adapted_adjoint(adjoint_dyn, X_f, ut, T, dt, Y_T):
+    """
+    Perform non-adapted adjoint process using the learned control ut.
+    Args:
+        adjoint_dyn: Dynamics for the non-adapted adjoint process
+        X_f: Forward state trajectory (steps+1, N, n) from t=0 to t=T
+        ut: Learned control function
+        T: Final time
+        dt: Time step size
+        Y_T: Terminal state (N, n)
+    Returns:
+        Y_b: Reversed state trajectory (steps+1, N, n) from t=0 to t=T
+    """
+    steps = int(T/dt)
+    N, n = Y_T.shape
+    Y_b = torch.zeros((steps+1, N, n), dtype=Y_T.dtype, device=Y_T.device)
+    Y_b[-1,:,:] = Y_T
+    time_grid = torch.linspace(0, T, steps+1).unsqueeze(-1).to(Y_T.device)  # (steps+1, 1)
+    ut.eval()
+    y_b = Y_T
+    for i in range(steps-1, -1, -1):
+        xt = X_f[i+1,:,:]  # shape (N, n)
+        # partial_H_x = H_x(x_b, Y_b[i+1,:,:], z_b)  # shape (N, n)
+        # Change to exponential integratorx, y, z, t, u=None
+        cost_term, lag_term_mat = adjoint_dyn(xt, torch.tensor(i * dt))  # shape (N, n), (N, n, n)
+        help_mat = torch.zeros((N, n+n, n+n))
+        help_mat[:, :n, :n] = lag_term_mat
+        help_mat[:, :n, n:]  = torch.eye(n)
+        exp_mat = torch.matrix_exp(help_mat * dt)  # shape (N, 2n, 2n)
+        exp_lag = exp_mat[:, :n, :n]  # shape (N , n, n)
+        exp_drift = exp_mat[:, :n, n:]  # shape (N , n, n)
+        
+        y_b = torch.einsum('nij,nj->ni', exp_lag, y_b) + torch.einsum('nij,nj->ni', exp_drift, cost_term) 
+
+        Y_b[i,:,:] = y_b
+    return Y_b
+
+
+def train_ut_network(ut, X_train, Y_train, time_grid, g, temperature, optimizer, scheduler, batch_size=64, iterations=1000):
+    """
+    Train the UT Network.
+    
+    Args:
+        ut: Instance of UTNetwork
+        X_train: Training state data (T x N x n)
+        Y_train: Training target data (T x N x n)
+        time_grid: Time grid (T x 1)
+        g: Diffusion function g
+        temperature: Temperature parameter
+        optimizer: Optimizer for training
+        scheduler: Learning rate scheduler
+        batch_size: Batch size for training
+        iterations: Number of training iterations
+    Returns:
+        loss_history: List of loss values during training
+    """
+    ut.train()
+    loss = 0
+    loss_history = []
+    steps, N, n = X_train.shape
+    X_train = X_train.permute(1, 0, 2) # (N, T, n)
+    Y_train = Y_train.permute(1, 0, 2) # (N, T, n)
+    t_batch_size = 16
+    for i in range(iterations):
+
+        batch_idx = random.sample(range(N), batch_size)
+        X_batch = X_train[batch_idx, :, :]
+        Y_batch = Y_train[batch_idx, :, :]
+        time_batch = time_grid.repeat(batch_size, 1).unsqueeze(-1)  # (batch_size, T, 1)
+        # time_idx = random.sample(range(steps), t_batch_size)
+        # X_batch = X_batch[:, time_idx, :]  # (batch_size, t_batch_size, n)
+        # Y_batch = Y_batch[:, time_idx, :]  # (batch_size, t_batch_size, n)
+        # time_batch = time_batch[:, time_idx, :]  # (batch_size, t_batch_size, 1)
+        X_batch = X_batch.view(-1, n) # (batch_size * t_batch_size, n)
+        time_batch = time_batch.view(-1, 1) # (batch_size * t_batch_size, 1)
+        gx = g(X_batch)  # (batch_size * t_batch_size, n, m)
+        Y_batch = Y_batch.view(-1, n) # (batch_size * t_batch_size, n)
+        gTY = torch.einsum('nij,nj->ni', gx.transpose(1, 2), Y_batch)  # (batch_size * t_batch_size, m)
+        # Y_clip = 40.0
+        # Y_batch = Y_batch.clamp(-Y_clip, Y_clip)
+        ut_pred = ut(X_batch, time_batch)  # (batch_size * t_batch_size, n)
+
+        # loss = nn.MSELoss()(phi_pred, Y_batch)  # Mean Squared Error loss
+        # loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
+        loss = torch.nn.functional.smooth_l1_loss(temperature * ut_pred, -gTY, beta=0.1)
+        # t0_loss = nn.SmoothL1Loss()(phi_net(X0_batch, torch.tensor(0.0).repeat(batch_size, 1)), Y0_batch)
+        # t1_loss = nn.SmoothL1Loss()(phi_net(XT_batch, torch.tensor(0.4).repeat(batch_size, 1)), YT_batch)
+        # loss = loss + t0_loss*0.0 +  t1_loss*0.0
+        
+        optimizer.zero_grad()
+        loss.backward()
+        # grad_norm = torch.nn.utils.clip_grad_norm_(phi_net.parameters(), 0.5)
+        # print(grad_norm)
+
+        optimizer.step()
+        scheduler.step()
+
+        cos_sim = torch.nn.functional.cosine_similarity(ut_pred, -gTY, dim=1)
+        cos_mean = cos_sim.mean()
+        angle_deg = torch.acos(torch.clamp(cos_mean, -1.0, 1.0)) * 180.0 / torch.pi
+        mag_ratio = (ut_pred.norm(dim=1) / (gTY.norm(dim=1) + 1e-6)).mean()
+
+        if i % 500 == 0 or i == iterations - 1:
+            print(f"Iteration {i}, Loss: {loss.item()}, Y_absmax: {Y_batch.abs().max().item()}, cos_sim_mean: {cos_mean.item()}, angle_deg: {angle_deg.item()}, mag_ratio: {mag_ratio.item()}")
+            loss_history.append(loss.item())
+    return loss_history
