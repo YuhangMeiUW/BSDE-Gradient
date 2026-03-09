@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn as nn
 
-from utils import train_score_network, generate_initial_data, rollout, time_reversal, noise, time_reversal_bsde, train_phi_network, batched_jacobian
-from network import ScoreNetwork, PhiNetwork
+from utils import train_score_network, rollout, time_reversal, time_reversal_bsde, train_phi_network, batched_jacobian
+from network import ScoreNetwork
 
 # Parameters
 T = 1.0  # End time
@@ -21,7 +21,7 @@ phi_iter = 10
 # u_iter = 10000
 # Temperature schedule
 # temperature_schedule = lambda k: 50.0 * (1 / 50)**(k/39) if k< 40 else 1.0  # Exponential decay schedule for temperature
-temperature_schedule = lambda k: 1.0  # constant temperature schedule 
+temperature_schedule = lambda k: 3.0  # constant temperature schedule 
 
 # load pretrained score network
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
@@ -178,8 +178,8 @@ time_grid = torch.arange(0, steps+1) * dt
 mu = torch.zeros(n, requires_grad=True)  # Mean of initial distribution
 Q = torch.tensor([[2.0]], requires_grad=True)  # Sigma = Q Q^T for initial distribution
 phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{10}_optiter{1000}_temperature{3.0}_initialQ2_updateQmu6times_2score.pth'))
-ut = UNetFromPhi(phi_net, g, 3.0)  # Initialize ut as None, which means no control at the beginning
+phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{10}_optiter{1000}_temperature{6.0}_initialQ2_updateQmu6times_2score.pth'))
+ut = UNetFromPhi(phi_net, g, 6.0)  # Initialize ut as None, which means no control at the beginning
 mu_opt = torch.optim.AdamW([mu], lr=3e-3, weight_decay=1e-4)
 Q_opt = torch.optim.AdamW([Q], lr=3e-3, weight_decay=1e-4)
 

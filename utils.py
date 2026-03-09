@@ -593,7 +593,7 @@ def train_ut_network(ut, X_train, Y_train, time_grid, g, temperature, optimizer,
 
         # loss = nn.MSELoss()(phi_pred, Y_batch)  # Mean Squared Error loss
         # loss = nn.SmoothL1Loss()(phi_pred, Y_batch)  # Huber loss
-        loss = torch.nn.functional.smooth_l1_loss(temperature * ut_pred, -gTY, beta=0.1)
+        loss = torch.nn.functional.smooth_l1_loss(ut_pred, -gTY/temperature, beta=0.1)
         # t0_loss = nn.SmoothL1Loss()(phi_net(X0_batch, torch.tensor(0.0).repeat(batch_size, 1)), Y0_batch)
         # t1_loss = nn.SmoothL1Loss()(phi_net(XT_batch, torch.tensor(0.4).repeat(batch_size, 1)), YT_batch)
         # loss = loss + t0_loss*0.0 +  t1_loss*0.0
@@ -606,10 +606,10 @@ def train_ut_network(ut, X_train, Y_train, time_grid, g, temperature, optimizer,
         optimizer.step()
         scheduler.step()
 
-        cos_sim = torch.nn.functional.cosine_similarity(ut_pred, -gTY, dim=1)
+        cos_sim = torch.nn.functional.cosine_similarity(ut_pred, -gTY/temperature, dim=1)
         cos_mean = cos_sim.mean()
         angle_deg = torch.acos(torch.clamp(cos_mean, -1.0, 1.0)) * 180.0 / torch.pi
-        mag_ratio = (ut_pred.norm(dim=1) / (gTY.norm(dim=1) + 1e-6)).mean()
+        mag_ratio = (ut_pred.norm(dim=1) / ((gTY/temperature).norm(dim=1) + 1e-6)).mean()
 
         if i % 500 == 0 or i == iterations - 1:
             print(f"Iteration {i}, Loss: {loss.item()}, Y_absmax: {Y_batch.abs().max().item()}, cos_sim_mean: {cos_mean.item()}, angle_deg: {angle_deg.item()}, mag_ratio: {mag_ratio.item()}")

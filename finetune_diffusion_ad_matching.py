@@ -17,7 +17,7 @@ noise_level = 2  # Noise level in the SDE
 kf = 30 # iterations for whole procedure
 u_iter = 10 # iterations for training u network at each iteration of the whole procedure
 opt_iter = 1000 # optimization iterations for training u network at each iteration of the whole procedure
-temperature_schedule = lambda k: 3.0  # constant temperature schedule 
+temperature_schedule = lambda k: 1.0  # constant temperature schedule 
 
 # load pretrained score network
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
@@ -148,7 +148,7 @@ time_grid = torch.arange(0, steps+1) * dt
 mu = torch.zeros(n, requires_grad=True)  # Mean of initial distribution
 Q = torch.tensor([[2.0]], requires_grad=True)  # Sigma = Q Q^T for initial distribution
 ut = ScoreNetwork(input_dim=n+1, out_dim=m, hidden_dim=64, num_blocks=4)
-ut.load_state_dict(torch.load(f'network/finetune_admatching_ut_timesteps{steps}_utiter{10}_optiter{1000}_iteration{30}_temperature{6.0}_initialQ2_updateQmu6times.pth'))
+ut.load_state_dict(torch.load(f'network/finetune_admatching_ut_timesteps{steps}_utiter{10}_optiter{1000}_iteration{30}_temperature{3.0}_initialQ2_updateQmu6times_lamony.pth'))
 
 
 
@@ -194,8 +194,8 @@ for k in range(kf):
             if opt_i % 100 == 0:
                 print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.clone().detach().numpy()} | Q: {Q.clone().detach().numpy()}")
 
-torch.save(ut.state_dict(), f'network/finetune_admatching_ut_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times.pth')
-torch.save(mu, f'network/finetune_admatching_mu_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times.pth')
-torch.save(Q, f'network/finetune_admatching_Q_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times.pth')
+torch.save(ut.state_dict(), f'network/finetune_admatching_ut_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times_lamony.pth')
+torch.save(mu, f'network/finetune_admatching_mu_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times_lamony.pth')
+torch.save(Q, f'network/finetune_admatching_Q_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times_lamony.pth')
 
 # torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_temperature{temperature}.pth')
