@@ -167,7 +167,7 @@ for k in range(kf):
         X_T = X_f[-1, :, :] # shape (N, n)
         # Generate non-adapted adjoint trajectories
         Y_T = partial_lf(X_T)  # shape (N, n)
-        Y_b = non_adapted_adjoint(adjoint_dyn, X_f, ut, T, dt, Y_T).detach()  # shape (steps+1, N, n)
+        Y_b = non_adapted_adjoint(adjoint_dyn, X_f, T, dt, Y_T).detach()  # shape (steps+1, N, n)
         ut.train()  # set UT network to training mode for training
         ut_train_loss = train_ut_network(ut, X_f, Y_b, time_grid, g, temperature, ut_opt, ut_scheduler, batch_size=64, iterations=1500)
     
