@@ -480,13 +480,13 @@ def train_phi_network(phi_net, X_train, Y_train, time_grid, optimizer, scheduler
 
 def riccati_eq(t, P_flat, A, dim=2):
     P = P_flat.reshape((dim,dim))
-    dPdt = -(A.T@P + P@A)
+    dPdt = -(A.T@P + P.T@A)
     return dPdt.flatten()
 
 
 
 def solve_riccati(A, Q_f, T, dt, dim=2):
-    steps = int(T/dt)
+    steps = int(T/dt)+1
     P_T = Q_f
     t_span = [T, 0]
     P_T_flat = P_T.flatten()
@@ -509,9 +509,9 @@ def sample_gaussian_mixture(batch_size, centers, std=0.5):
     return centers[idx] + noise
 
 
-def non_adapted_adjoint(adjoint_dyn, X_f, ut, T, dt, Y_T):
+def non_adapted_adjoint(adjoint_dyn, X_f, T, dt, Y_T):
     """
-    Perform non-adapted adjoint process using the learned control ut.
+    Perform non-adapted adjoint process.
     Args:
         adjoint_dyn: Dynamics for the non-adapted adjoint process
         X_f: Forward state trajectory (steps+1, N, n) from t=0 to t=T
@@ -526,8 +526,6 @@ def non_adapted_adjoint(adjoint_dyn, X_f, ut, T, dt, Y_T):
     N, n = Y_T.shape
     Y_b = torch.zeros((steps+1, N, n), dtype=Y_T.dtype, device=Y_T.device)
     Y_b[-1,:,:] = Y_T
-    time_grid = torch.linspace(0, T, steps+1).unsqueeze(-1).to(Y_T.device)  # (steps+1, 1)
-    ut.eval()
     y_b = Y_T
     for i in range(steps-1, -1, -1):
         xt = X_f[i+1,:,:]  # shape (N, n)
