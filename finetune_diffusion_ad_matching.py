@@ -23,8 +23,6 @@ temperature_schedule = lambda k: 1.0  # constant temperature schedule
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
 score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
-# temp_score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=3)
-# temp_score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
 # Nonlinear system dynamics
 def g(x):
@@ -54,8 +52,6 @@ def f(x, t, u_t=None):
     a = 2
     u = u_t(x, t.repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
     gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
-    # u = u_t[int(t/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
-    # gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
     df = a * x + noise_level**2 * score_nn(x, (T - t).repeat(x.shape[0], 1)) + gu
     return df
 
@@ -78,8 +74,6 @@ def partial_lf(x):
     Returns:
         torch.Tensor: Gradient of the terminal cost. Shape (N, n)
     """
-    # Q_f = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-    # return x @ Q_f
     return x - 3.0
 
 def H_x(x, y, z, t, u=None):
@@ -111,7 +105,6 @@ def H_x(x, y, z, t, u=None):
 
     # trace term Tr(z g_x)
     trace_term = torch.zeros_like(x)  # shape (N, n)
-    # return cost_term + lag_term + trace_term
     return cost_term, lag_term_mat, trace_term
 
 def adjoint_dyn(x, t):
@@ -198,4 +191,3 @@ torch.save(ut.state_dict(), f'network/finetune_admatching_ut_timesteps{steps}_ut
 torch.save(mu, f'network/finetune_admatching_mu_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times_lamony.pth')
 torch.save(Q, f'network/finetune_admatching_Q_timesteps{steps}_utiter{u_iter}_optiter{opt_iter}_iteration{kf}_temperature{temperature}_initialQ2_updateQmu6times_lamony.pth')
 
-# torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_temperature{temperature}.pth')
