@@ -17,10 +17,6 @@ noise_level = 2  # Noise level in the SDE
 kf = 30 # iterations for whole procedure
 opt_iter = 1000
 phi_iter = 10
-# temperature = 50.0
-# u_iter = 10000
-# Temperature schedule
-# temperature_schedule = lambda k: 50.0 * (1 / 50)**(k/39) if k< 40 else 1.0  # Exponential decay schedule for temperature
 temperature_schedule = lambda k: 3.0  # constant temperature schedule 
 
 # load pretrained score network
@@ -28,7 +24,6 @@ score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
 score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
 temp_score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=3)
-# temp_score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
 
 # Nonlinear system dynamics
 def g(x):
@@ -58,8 +53,6 @@ def f(x, t, u_t=None):
     a = 2
     u = u_t(x, t.repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
     gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
-    # u = u_t[int(t/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
-    # gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
     df = a * x + noise_level**2 * score_nn(x, (T - t).repeat(x.shape[0], 1)) + gu
     return df
 
@@ -82,8 +75,6 @@ def partial_lf(x):
     Returns:
         torch.Tensor: Gradient of the terminal cost. Shape (N, n)
     """
-    # Q_f = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-    # return x @ Q_f
     return x - 3.0
 
 # time_grid = torch.arange(0, steps+1) * dt
@@ -117,7 +108,6 @@ def H_x(x, y, z, t, u=None):
 
     # trace term Tr(z g_x)
     trace_term = torch.zeros_like(x)  # shape (N, n)
-    # return cost_term + lag_term + trace_term
     return cost_term, lag_term_mat, trace_term
 
 def special_f(x, t=None, u_t=None):
@@ -134,8 +124,6 @@ def special_f(x, t=None, u_t=None):
     a = 2
     u = u_t(x, (T-t).repeat(x.shape[0], 1)) if u_t is not None else torch.zeros(m)  # shape (N, m)
     gu = torch.einsum('nij,nj->ni', g(x), u)  if u_t is not None else torch.zeros_like(x) # shape (N, n)
-    # u = u_t[int((T-t)/dt)] if u_t is not None else torch.zeros((N, m))  # shape (N, m) make sure use u at the right time step
-    # gu = torch.einsum('nij,nj->ni', g(x), u) # shape (N, n)
     return -a * x - gu
 
 def original_pdf(x):
@@ -145,14 +133,6 @@ def original_pdf(x):
     p1 = torch.exp(-0.5 * ((x - m1) / sigma)**2) / (sigma * torch.sqrt(torch.tensor(2.0) * torch.pi))
     p2 = torch.exp(-0.5 * ((x - m2) / sigma)**2) / (sigma * torch.sqrt(torch.tensor(2.0) * torch.pi))
     return 0.5 * (p1 + p2)
-
-# def leftshifted_pdf(x):
-#     m1 = 2.5
-#     m2 = -3.5
-#     sigma = 1.0
-#     p1 = torch.exp(-0.5 * ((x - m1) / sigma)**2) / (sigma * torch.sqrt(torch.tensor(2.0) * torch.pi))
-#     p2 = torch.exp(-0.5 * ((x - m2) / sigma)**2) / (sigma * torch.sqrt(torch.tensor(2.0) * torch.pi))
-#     return 0.5 * (p1 + p2)
 
 
 def tilted_pdf(x, temperature):
@@ -183,14 +163,6 @@ ut = UNetFromPhi(phi_net, g, 6.0)  # Initialize ut as None, which means no contr
 mu_opt = torch.optim.AdamW([mu], lr=3e-3, weight_decay=1e-4)
 Q_opt = torch.optim.AdamW([Q], lr=3e-3, weight_decay=1e-4)
 
-# X_0 = (torch.randn(N, n) @ Q.clone().detach() + mu.clone().detach())  # shape (N, n)
-# W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
-# X_train_score = rollout(special_f, g, T, dt, X_0, W_f, u_t=ut).detach().flip(dims=[0])  # shape (steps+1, N, n)
-# score_optimizer = torch.optim.AdamW(score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
-# score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
-# score_nn.train()
-# score_loss_history = train_score_network(score_nn, X_train_score, time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=5000)
-# score_nn.eval()
 #### We don't need to retian score because phi PDE still holds for a wrong s(t,x). ####
 for k in range(kf):
     print(f"Iteration {k+1}/{kf}")
@@ -203,11 +175,7 @@ for k in range(kf):
     W_b = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # backward noise
     X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut)  # shape (steps+1, N, n)
     X_T = X_f[-1,:,:].detach()  # shape (N, n)
-    # if k == 0:
-    #     X_T = X_f[-1,:,:].detach()  # shape (N, n)
-    # else:
-    #     X_T = X_T.clone()
-    # X_b = rollout(special_f, g, T, dt, X_T, W_b.flip(dims=[0]), u_t=ut).detach().flip(dims=[0])
+    # Train score network with the generated data
     temp_score_nn.train()
     score_optimizer = torch.optim.AdamW(temp_score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
     score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
@@ -215,33 +183,6 @@ for k in range(kf):
     temp_score_nn.eval()
     X_b = time_reversal(f, g, T, dt, X_T, W_b, [temp_score_nn], nn_num=1).detach()
     Y_T = partial_lf(X_T)  # shape (N, n)
-    # plt.figure()
-    # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
-    # plt.title(f'Backward Rollout of X_t at Iteration {k+1}')
-    # plt.show()
-    # plt.figure()
-    # plt.plot(X_f[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
-    # plt.title(f'Forward Rollout of X_t at Iteration {k+1}')
-    # plt.show()
-    # plt.figure()
-    # plt.hist(X_f[-1, :, 0].detach().numpy(), bins=50, color='blue', alpha=0.5, density=True)
-    # plt.plot(torch.linspace(-8, 8, 1000).numpy(), tilted_pdf(torch.linspace(-8, 8, 1000), temperature), label='tilted pdf', color='red')
-    # plt.title(f'Distribution of forward $X_T$ at Iteration {k+1}')
-    # plt.show()
-    # plt.figure()
-    # plt.hist(X_b[-1, :, 0].detach().numpy(), bins=50, color='blue', alpha=0.5, density=True)
-    # plt.plot(torch.linspace(-8, 8, 1000).numpy(), tilted_pdf(torch.linspace(-8, 8, 1000), temperature), label='tilted pdf', color='red')
-    # plt.title(f'Distribution of backward $X_T$ at Iteration {k+1}')
-    # plt.show()
-    # plt.figure()
-    # plt.hist(Y_T[:, 0].detach().numpy(), bins=50, color='blue', alpha=0.5, density=True)
-    # plt.title(f'Distribution of terminal costate $Y_T$ at Iteration {k+1}')
-    # plt.plot(torch.linspace(-11, 5, 1000).numpy(), leftshifted_pdf(torch.linspace(-11, 5, 1000)), label='tilted pdf', color='red')
-    # plt.show()
-    # if k == 0:
-    #     uf = torch.zeros_like(X_f)  # shape (steps+1, N, m)
-    # else:
-    #     uf = ut(X_f.reshape(-1, n), time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)).reshape(steps+1, N, m).detach()  # shape (steps+1, N, m)
     
 
     # Train phi network
@@ -256,33 +197,12 @@ for k in range(kf):
         phi_net.eval()
         Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [temp_score_nn], X_b, nn_num=1)
         phi_net.train()
-        # plt.figure()
-        # plt.plot(Y_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
-        # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='red', alpha=0.1)
-        # plt.title(f'Backward Rollout of Y_t with Trained Phi at Iteration {k+1}, Phi Iteration {phi_i+1}')
-        # plt.show()
-        # phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-        # optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
-        # scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=500, gamma=0.9)
         phi_loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer_phi, scheduler_phi, batch_size=64, iterations=1500)
     
-    # torch.save(X_f, f'data/finetune_Xf_timesteps{steps}_optiter{opt_iter}_const_temperature{temperature}_iteration{k+1}in{kf}.pth')
-    # torch.save(X_b, f'data/finetune_Xb_timesteps{steps}_optiter{opt_iter}_const_temperature{temperature}_iteration{k+1}in{kf}.pth')
-    # torch.save(Y_b, f'data/finetune_Yb_timesteps{steps}_optiter{opt_iter}_const_temperature{temperature}_iteration{k+1}in{kf}.pth')
-    # plt.figure()
-    # plt.plot(Y_b[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
-    # plt.plot(X_b[:, :1000, 0].detach().numpy(), color='red', alpha=0.1)
-    # plt.plot(X_f[:, :1000, 0].detach().numpy(), color='green', alpha=0.1)
-    # plt.title(f'Backward Rollout of Y_t with Trained Phi at Iteration {k+1}, Phi Iteration {phi_i+1}')
-    # plt.show()
     
-    # Optimize initial distribution parameters and feedback control law
+    # Update initial distribution parameters and feedback control law
     
-    # if ut is None:
-    #     ut = torch.zeros((steps+1, N, m), requires_grad=True)  # shape (steps+1, N, m)
-    # ut_opt = torch.optim.AdamW([ut], lr=1e-2, weight_decay=1e-4)
     ut = UNetFromPhi(phi_net, g, temperature).eval()
-    # W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
     if k in [4, 9, 14, 19, 24, 29]:  # Save the phi network at certain iterations for updating initial distribution( phi only valid at the support of the empirical distribution of X_b)
         mu_opt = torch.optim.AdamW([mu], lr=3e-3, weight_decay=1e-4)
         Q_opt = torch.optim.AdamW([Q], lr=3e-3, weight_decay=1e-4)
@@ -307,75 +227,10 @@ for k in range(kf):
             Q_opt.step()
             if opt_i % 100 == 0:
                 print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.clone().detach().numpy()} | Q: {Q.clone().detach().numpy()}")
-        
-        # Retrain score network with the updated initial distribution
-        # X_f = rollout(f, g, T, dt, (torch.randn(N, n) @ Q.clone().detach() + mu.clone().detach()).detach(), torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)), u_t=ut)  # shape (steps+1, N, n)
-        # X_T = X_f[-1].clone().detach()  # shape (N, n)
-        # W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)) # forward noise
-        # X_train_score = rollout(special_f, g, T, dt, X_T, W_f, u_t=ut).detach() # shape (steps+1, N, n)
-        # score_optimizer = torch.optim.AdamW(score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
-        # score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
-        # score_nn.train()
-        # score_loss_history = train_score_network(score_nn, X_train_score, time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=5000)
-        # score_nn.eval()
-    # for opt_i in range(opt_iter):
-        
-    #     mu_opt.zero_grad(set_to_none=True)
-    #     Q_opt.zero_grad(set_to_none=True)
-        
-
-    #     # Compute mu Q gradients with the trained phi network
-    #     Xi = torch.randn(N, n)
-    #     theta = (Xi @ Q + mu).detach()  # shape (N, n)
-    #     phi_0 = phi_net(theta, torch.tensor(0.0).repeat(theta.shape[0], 1)).detach()  # shape (N, n)
-    #     mu_grad = phi_0.mean(dim=0)  # shape (n,)
-    #     temp = (theta - mu.clone().detach()) @ torch.linalg.pinv(Q.clone().detach() + 1e-6 * torch.eye(n)) # shape (N, n)
-    #     Q_grad = torch.einsum('nij,njk->nik', phi_0.unsqueeze(2), temp.unsqueeze(1)).mean(dim=0)  # shape (n, n)
-    #     mu_kl_grad = mu.clone().detach().reshape(-1)
-    #     Q_kl_grad = Q.clone().detach() - torch.linalg.pinv(Q.clone().detach() + 1e-6 * torch.eye(n)).T
-    #     mu.grad = (mu_grad + mu_kl_grad).detach()
-    #     Q.grad = (Q_grad + Q_kl_grad).detach()
-
-    #     # Update ut phi through gradient descent H_u
-    #     # X_f = rollout(f, g, T, dt, theta, W_f, u_t=ut)  # shape (steps+1, N, n)
-    #     # X_flat = X_f.reshape(-1, n)  # shape (steps+1)*N, n
-    #     # t_flat = time_grid.repeat_interleave(N, dim=0).reshape(-1, 1)  # shape (steps+1)*N, 1
-    #     # Y_flat = phi_net(X_flat, t_flat).detach()  # shape (steps+1)*N, n
-    #     # Y_f = Y_flat.reshape(steps+1, N, n)  # shape (steps+1, N, n)
-    #     # g_flat = g(X_flat).detach()  # shape (steps+1)*N, n, m
-    #     # gX = g_flat.reshape(steps+1, N, n, m)  # shape (steps+1, N, n, m)
-    #     # gTy = torch.einsum('tnij,tnj->tni', gX.transpose(-2, -1), Y_f).detach()  # shape (steps+1, N, m)
-    #     # ut.grad = (ut + gTy).detach()
-
-    #     mu_opt.step()
-    #     Q_opt.step()
-    #     # ut_opt.step()
-    #     print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.clone().detach().numpy()} | Q: {Q.clone().detach().numpy()}") 
-    
-    # Update ut with the trained phi network
-    # ut = UNetFromPhi(phi_net, g).eval()
-    # X_f = rollout(f, g, T, dt, (torch.randn(N, n) @ Q + mu).detach(), torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt)), u_t=ut)  # shape (steps+1, N, n)
-    # X_b = rollout(special_f, g, T, dt, X_T, W_b.flip(dims=[0]), u_t=ut).detach().flip(dims=[0])
-    # if k == kf-1:
-    #     plt.figure()
-    #     plt.plot(X_f[:, :1000, 0].detach().numpy(), color='blue', alpha=0.1)
-    #     plt.show()
-    #     plt.figure()
-    #     plt.hist(X_f[-1, :, 0].detach().numpy(), bins=50, color='blue', alpha=0.5, density=True)
-    #     plotx = torch.linspace(-8, 8, 1000)
-    #     Z = torch.trapz(tilted_pdf(plotx, temperature), plotx)
-    #     q = tilted_pdf(plotx, temperature)/Z
-    #     plt.plot(plotx.numpy(), q.numpy(), label='tilted pdf', color='red')
-    #     plt.title(f'Distribution of $X_T$ after Finetuning Iteration {k+1}')
-    #     plt.xlabel('$X_T$')
-    #     plt.show()
-    #     print(f"Final mu: {mu.detach().numpy()} | Final Q: {Q.detach().numpy()}")
-    #     print(f"Final mean and std of X_T: {X_f[-1, :, 0].mean().item()} | {X_f[-1, :, 0].std().item()}")
-    
-    # print(f"Final mean and std of X_T: {X_f[-1, :, 0].mean().item()} | {X_f[-1, :, 0].std().item()}")
+             
 
 torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
 torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
 torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
 
-# torch.save(ut, f'network/finetune_ut_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_temperature{temperature}.pth')
+
