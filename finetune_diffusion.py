@@ -77,7 +77,6 @@ def partial_lf(x):
     """
     return x - 3.0
 
-# time_grid = torch.arange(0, steps+1) * dt
 
 def H_x(x, y, z, t, u=None):
     """
