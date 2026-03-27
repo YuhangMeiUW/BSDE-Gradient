@@ -1,29 +1,27 @@
 import torch
 import numpy as np
 
-from utils import train_score_network, generate_initial_data, rollout, time_reversal, noise, time_reversal_bsde, train_phi_network
+from utils import train_score_network, rollout, time_reversal, time_reversal_bsde, train_phi_network, non_adapted_adjoint
 from network import ScoreNetwork, PhiNetwork
 
 # Parameters
 T = 4.0  # End time
 n = 2    # Dimension of state space
 m = 1    # Dimension of Brownian motion
-N = 50000 # Number of training samples
-INITIAL_DIST = 'Gaussian'  # Initial distribution type ('Gaussian', 'Bimodal', or 'Multimodal')
+N = 10000 # Number of training samples
 m_0 = torch.tensor([0.0, 0.0])  # Mean of initial distribution
-initial_var = 5.0
+initial_var = 1.0
 sigma_0 = torch.eye(n) * initial_var  # Covariance of initial distribution
 dt = 0.05  # Time step size
 steps = int(T/dt)  # Number of time steps
 noise_level = 0.5  # Noise level in the SDE
 kf = 20 # iterations for phi
-exp_num = 10000
 
 # Generate initial data
-X_0 = generate_initial_data(INITIAL_DIST, m_0, sigma_0, N, shift=5)
+X_0 = torch.randn((N, n)) * torch.sqrt(sigma_0.diag()) + m_0  # Shape (N, n)
 
 # Nonlinear system dynamics
-def f(x, t=None):
+def f(x, t, ut=None):
     """
     Drift function of X_t for a nonlinear system.
     Args:
@@ -52,7 +50,7 @@ def g(x):
 
 def lf(x):
     """
-    Terminal cost function for a linear system.
+    Terminal cost function for a nonlinear system.
     Args:
         x (torch.Tensor): State vector. Shape (N, n)
     Returns:
@@ -64,35 +62,15 @@ def lf(x):
 
 def partial_lf(x):
     """
-    Gradient of the terminal cost function for a linear system.
+    Gradient of the terminal cost function for a nonlinear system.
     Args:
         x (torch.Tensor): State vector. Shape (N, n)
     Returns:
         torch.Tensor: Gradient of the terminal cost. Shape (N, n)
     """
-    # Q_f = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-    # return x @ Q_f
     dlf1 = torch.sin(x[:,0])
     dlf2 = x[:,1]
     return torch.stack((dlf1, dlf2), dim=1)
-
-# time_grid = torch.arange(0, steps+1) * dt
-
-# W_f = torch.zeros((steps+1, N, m))# forward noise
-# W_b = torch.zeros((steps+1, N, m))# backward noise
-# for noise_step in range(steps+1):
-#     W_f[noise_step, :, :] = noise(dt, N, m)
-#     W_b[noise_step, :, :] = noise(dt, N, m)
-
-# # Generate training data by rolling out the SDE
-# X_forward = rollout(f, g, T, dt, X_0, W_f)
-
-# score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=3)
-# score_optimizer = torch.optim.AdamW(score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
-# score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
-
-# score_loss_history = train_score_network(score_nn, X_forward, time_grid, g, noise_level, score_optimizer, score_scheduler, batch_size=64, iterations=10000)
-# print("Score Network Training completed.")
 
 
 def H_x(x, y, z, t=None):
@@ -114,9 +92,6 @@ def H_x(x, y, z, t=None):
     cost_term = torch.zeros_like(x)  # shape (N, n)
 
     # lagrange term y^T f_x
-    # lag1 = y[:, 1] * torch.cos(x[:, 0])  # shape (N,)
-    # lag2 = y[:, 0] - 0.01 * y[:, 1]  # shape (N,)
-    # lag_term = torch.stack((lag1, lag2), dim=1)  # shape (N, n)
     lag_term_mat = torch.zeros((x.shape[0], n, n))  # shape (N, n, n)
     lag_term_mat[:, 0, 1] = torch.cos(x[:, 0]) # shape (N,)
     lag_term_mat[:, 1, 0] = 1.0
@@ -124,62 +99,70 @@ def H_x(x, y, z, t=None):
 
     # trace term Tr(z g_x)
     trace_term = torch.zeros_like(x)  # shape (N, n)
-    # return cost_term + lag_term + trace_term
     return cost_term, lag_term_mat, trace_term
 
-# X_T = X_forward[-1, :, :]  # Terminal state
-# X_b = time_reversal(f, g, T, dt, X_T, W_b, [score_nn], nn_num=1)
-# Y_T = partial_lf(X_T)  # Terminal condition for Y_t
+def adjoint_dyn(x, t):
+    """
+    non-adapted adjoint process
+    Args:
+        x (torch.Tensor): State vector. Shape (N, n)
+    Returns:
+        torch.Tensor: Drift vector. Shape (N, n)
+        torch.Tensor: Lagrange term matrix. Shape (N, n, n)
+    """
+    cost_term = torch.zeros_like(x)  # shape (N, n)
+    lag_term_mat = torch.zeros((x.shape[0], n, n))  # shape (N, n, n)
+    lag_term_mat[:, 0, 1] = torch.cos(x[:, 0]) # shape (N,)
+    lag_term_mat[:, 1, 0] = 1.0
+    lag_term_mat[:, 1, 1] = -0.01
 
-# # Solve the BSDE by using time reversal, keep training phi network until convergence
-# phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
-# optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-3, weight_decay=1e-4)
-# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.9)
+    return cost_term, lag_term_mat
 
 
-# for k in range(kf):
-#     # reinitialize phi network each iteration
+time_grid = torch.arange(0, steps+1) * dt
+
+W_f = torch.randn((steps+1, N, m)) * np.sqrt(dt)  # forward noise
+W_b = torch.randn((steps+1, N, m)) * np.sqrt(dt)  # backward noise
+
+# Generate training data by rolling out the SDE
+X_forward = rollout(f, g, T, dt, X_0, W_f)
+
+score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=3)
+score_optimizer = torch.optim.AdamW(score_nn.parameters(), lr=1e-3, weight_decay=1e-4)
+score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=1000, gamma=0.9)
+
+score_loss_history = train_score_network(score_nn, X_forward, time_grid, g, noise_level, score_optimizer, score_scheduler, batch_size=64, iterations=10000)
+print("Score Network Training completed.")
+
+
+
+X_T = X_forward[-1, :, :]  # Terminal state
+X_b = time_reversal(f, g, T, dt, X_T, W_b, [score_nn], nn_num=1)
+Y_T = partial_lf(X_T)  # Terminal condition for Y_t
+
+# Solve the BSDE by using time reversal, keep training phi network until convergence
+phi_tr = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
+optimizer_tr = torch.optim.AdamW(phi_tr.parameters(), lr=1e-3, weight_decay=1e-4)
+scheduler_tr = torch.optim.lr_scheduler.StepLR(optimizer_tr, step_size=1000, gamma=0.9)
+phi_ad = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
+optimizer_ad = torch.optim.AdamW(phi_ad.parameters(), lr=1e-3, weight_decay=1e-4)
+scheduler_ad = torch.optim.lr_scheduler.StepLR(optimizer_ad, step_size=1000, gamma=0.9)
+
+
+for k in range(kf):
+    # reinitialize phi network each iteration
     
-#     Y_b = time_reversal_bsde(H_x, g, phi_net, T, dt, Y_T, W_b, [score_nn], X_b, nn_num=1)
-#     phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32)
-#     optimizer = torch.optim.AdamW(phi_net.parameters(), lr=1e-3, weight_decay=1e-4)
-#     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.9)
-#     loss_history = train_phi_network(phi_net, X_b, Y_b, time_grid, optimizer, scheduler, batch_size=64, iterations=8000)
-#     print(f"Phi Network Training Iteration {k+1}/{kf} completed.")
+    Y_b = time_reversal_bsde(H_x, g, phi_tr, T, dt, Y_T, W_b, [score_nn], X_b, nn_num=1)
+    loss_history = train_phi_network(phi_tr, X_b, Y_b, time_grid, optimizer_tr, scheduler_tr, batch_size=64, iterations=5000)
+    print(f"Phi Network Training Iteration {k+1}/{kf} completed.")
+
+    Y_bn = non_adapted_adjoint(adjoint_dyn, X_forward, T, dt, Y_T).detach()  # shape (steps+1, N, n)
+    loss_history_adjoint = train_phi_network(phi_ad, X_forward, Y_bn, time_grid, optimizer_ad, scheduler_ad, batch_size=64, iterations=5000)
+    print(f"Phi Network Training with Adjoint Iteration {k+1}/{kf} completed.")
 
 
-# torch.save(phi_net.state_dict(), f'network/phi_network_ip_bsde_nl{noise_level}_initialsample{N}_initialvar{initial_var}.pth')
-
-
-
-
-# Solve the question by autograd on theta, you can comment this part if not needed
-N = 10000
-exp_num = 10000
-grad_thetas = []
-shift = torch.zeros((N, n))
-shift[:,0] = 0.0
-shift[:,1] = 0.0
-theta = torch.randn((N, n), requires_grad=True) + shift
-for exp_i in range(exp_num):
-
-    # generate Brownian motion increments
-    # W_f = torch.zeros((steps+1, N, m))# forward noise
-    # for noise_step in range(steps+1):
-    #     W_f[noise_step, :, :] = noise(dt, N, m)
-    W_f = torch.randn(steps + 1, N, m) * torch.sqrt(torch.tensor(dt))
-    
-    torch.autograd.set_detect_anomaly(True)
-    loss = lf(rollout(f, g, T, dt, theta, W_f)[-1, :, :]).sum(dim=0)
-
-    grad_theta = torch.autograd.grad(loss, theta)[0]
-    grad_thetas.append(grad_theta.detach().clone())
-    if (exp_i+1) % 500 == 0:
-        print(f"Experiment {exp_i+1}/{exp_num} completed.")
-
-grad_thetas = torch.stack(grad_thetas, dim=0) # (exp_num, N, n)
-torch.save(grad_thetas, f'data/initial_theta_grad_IP_nl{noise_level}_exp{exp_num}.pth')
-torch.save(theta, f'data/initial_theta_value_IP_nl{noise_level}_exp{exp_num}.pth')
+torch.save(phi_tr.state_dict(), f'network/tr_phi_network_ip_bsde_nl{noise_level}.pth')
+torch.save(phi_ad.state_dict(), f'network/ad_phi_network_ip_bsde_nl{noise_level}.pth')
 
 
 
