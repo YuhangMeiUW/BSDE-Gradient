@@ -17,11 +17,11 @@ noise_level = 2  # Noise level in the SDE
 kf = 30 # iterations for whole procedure
 opt_iter = 1000
 phi_iter = 10
-temperature_schedule = lambda k: 3.0  # constant temperature schedule 
+temperature_schedule = lambda k: 1.0  # constant temperature schedule 
 
 # load pretrained score network
 score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=32, num_blocks=2)
-score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth'))
+score_nn.load_state_dict(torch.load(f'network/toy_score_network_timesteps{steps}_v2.pth', weights_only=True))
 
 temp_score_nn = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=3)
 
@@ -157,8 +157,9 @@ time_grid = torch.arange(0, steps+1) * dt
 mu = torch.zeros(n, requires_grad=True)  # Mean of initial distribution
 Q = torch.tensor([[2.0]], requires_grad=True)  # Sigma = Q Q^T for initial distribution
 phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{10}_optiter{1000}_temperature{6.0}_initialQ2_updateQmu6times_2score.pth'))
+phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{10}_optiter{1000}_temperature{6.0}_initialQ2_updateQmu6times_2score_v2.pth', weights_only=True))
 ut = UNetFromPhi(phi_net, g, 6.0)  # Initialize ut as None, which means no control at the beginning
+# ut = None
 mu_opt = torch.optim.AdamW([mu], lr=3e-3, weight_decay=1e-4)
 Q_opt = torch.optim.AdamW([Q], lr=3e-3, weight_decay=1e-4)
 
@@ -180,14 +181,18 @@ for k in range(kf):
     score_scheduler = torch.optim.lr_scheduler.StepLR(score_optimizer, step_size=500, gamma=0.9)
     score_loss_history = train_score_network(temp_score_nn, X_f.detach(), time_grid, g, 1, score_optimizer, score_scheduler, batch_size=64, iterations=10000)
     temp_score_nn.eval()
-    X_b = time_reversal(f, g, T, dt, X_T, W_b, [temp_score_nn], nn_num=1).detach()
+    X_b = time_reversal(f, g, T, dt, X_T, W_b, [temp_score_nn], nn_num=1, u_t=ut).detach()
     Y_T = partial_lf(X_T)  # shape (N, n)
+    # plt.figure()
+    # plt.plot(X_f.detach().numpy()[:,:1000,0], color='blue', alpha=0.1, label='Forward Trajectories')
+    # plt.plot(X_b.detach().numpy()[:,:1000,0], color='orange', alpha=0.1, label='Backward Trajectories')
+    # plt.show()
     
 
     # Train phi network
     if k == 0:
         phi_net = ScoreNetwork(input_dim=n+1, out_dim=n, hidden_dim=64, num_blocks=4)
-        phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{5}_optiter{1000}_temperature{8.0}_initialQ2_updateQmu6times_2score.pth'))
+        phi_net.load_state_dict(torch.load(f'network/finetune_phi_network_timesteps{steps}_iteration{30}_phiiter{10}_optiter{1000}_temperature{6.0}_initialQ2_updateQmu6times_2score_v2.pth', weights_only=True))
     optimizer_phi = torch.optim.AdamW(phi_net.parameters(), lr=1e-5, weight_decay=1e-4)
     scheduler_phi = torch.optim.lr_scheduler.StepLR(optimizer_phi, step_size=500, gamma=0.9)
 
@@ -228,8 +233,8 @@ for k in range(kf):
                 print(f"Total iteration {k+1}/{kf} | Optimization iteration {opt_i+1}/{opt_iter} | mu: {mu.clone().detach().numpy()} | Q: {Q.clone().detach().numpy()}")
              
 
-torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
-torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
-torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score.pth')
+torch.save(phi_net.state_dict(), f'network/finetune_phi_network_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score_v2.pth')
+torch.save(mu, f'network/finetune_mu_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score_v2.pth')
+torch.save(Q, f'network/finetune_Q_timesteps{steps}_iteration{kf}_phiiter{phi_iter}_optiter{opt_iter}_temperature{temperature}_initialQ2_updateQmu6times_2score_v2.pth')
 
 

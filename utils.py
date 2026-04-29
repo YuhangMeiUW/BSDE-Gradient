@@ -230,7 +230,7 @@ def rollout(f, g, tf, dt, x0, W, u_t=None):
 def zero_div_ggT(x):
     return torch.zeros(x.shape[0], x.shape[1], dtype=x.dtype, device=x.device)
 
-def time_reversal(f, g, tf, dt, xT, W_b, score, nn_num=0, div_ggT=zero_div_ggT):
+def time_reversal(f, g, tf, dt, xT, W_b, score, nn_num=0, div_ggT=zero_div_ggT, u_t=None):
     """
     Perform time reversal of the SDE using the learned score function.
     Args:
@@ -265,7 +265,7 @@ def time_reversal(f, g, tf, dt, xT, W_b, score, nn_num=0, div_ggT=zero_div_ggT):
         elif nn_num == 0:
             score = score_net(X_b[i+1,:,:], time_grid[i+1,:])  # (N, n)
         gg_T = torch.einsum('nij,njk->nik', g(X_b[i+1,:,:]), g(X_b[i+1,:,:]).transpose(1,2))  # (N, n, n)
-        X_b[i,:,:] = X_b[i+1,:,:] - (f(X_b[i+1,:,:], time_grid[i+1,:]) - torch.einsum('nij,njk->nik', gg_T, score.unsqueeze(-1)).squeeze(-1) - div_ggT(X_b[i+1,:,:])) * dt + torch.einsum('nij,njk->nik', g(X_b[i+1,:,:]), W_b[i+1,:,:].unsqueeze(-1)).squeeze(-1)
+        X_b[i,:,:] = X_b[i+1,:,:] - (f(X_b[i+1,:,:], time_grid[i+1,:], u_t) - torch.einsum('nij,njk->nik', gg_T, score.unsqueeze(-1)).squeeze(-1) - div_ggT(X_b[i+1,:,:])) * dt + torch.einsum('nij,njk->nik', g(X_b[i+1,:,:]), W_b[i+1,:,:].unsqueeze(-1)).squeeze(-1)
     return X_b
 
 def noise(dt, N, m):
